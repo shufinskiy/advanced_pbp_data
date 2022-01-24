@@ -10,63 +10,35 @@ source('helpers.R')
 source('utils.R')
 
 
-get_pbp_stats <- function(GameID, season, player_on_floor = FALSE, possesions = FALSE, full_data = FALSE, ...){
+get_pbp_stats <- function(GameID, season, ...){
 
-  nba_data <- get_nba_pbp(GameID, season, player_on_floor, ...)
-
-  if(is.null(dim(nba_data))){
-    return(nba_data)
+  ### Get game date
+  if (season < 2000){
+    message('Statistics on pbpstats.com start from 2000/01 season')
+    return(NULL)
   }
+  game_summary <- get_boxscore_summary(GameID, season, headers = 'GameSummary')
+  game_date <- format(as.Date(game_summary$GAME_DATE_EST[1],format="%Y-%m-%d"))
+  team_id <- c(game_summary$HOME_TEAM_ID[1], game_summary$VISITOR_TEAM_ID[1])
+  start_period <- 1
+  end_period <- game_summary$LIVE_PERIOD[1]
 
-  if(possesions){
-    ### Get game date
-    if (season < 2000){
-      message('Statistics on pbpstats.com start from 2000/01 season')
-      return(nba_data)
-    }
-    game_date <- get_boxscore_summary(GameID, season, headers = 'GameSummary')
-    game_date <- format(as.Date(game_date$GAME_DATE_EST[1],format="%Y-%m-%d"))
-    team_id <- unique(nba_data$PLAYER1_TEAM_ID)
-    team_id <- team_id[!is.na(team_id)]
-    start_period <- min(nba_data$PERIOD)
-    end_period <- max(nba_data$PERIOD)
+  ### Get offense possessions teams
+  count <- 1
+  url <- 'https://api.pbpstats.com/get-possessions/nba'
 
-    ### Get offense possessions teams
-    count <- 1
-    url <- 'https://api.pbpstats.com/get-possessions/nba'
+  response <- lapply(team_id, requests_pbpstats, url = url, season = season, game_date = game_date, count = count, n_rep = 5)
 
-    response <- lapply(team_id, requests_pbpstats, url = url, season = season, game_date = game_date, count = count, n_rep = 5)
+  pbp_data <- bind_rows(lapply(response, function(x){
+    json <- fromJSON(content(x, as = "text", encoding = 'UTF-8'))
+    pbp_data <- json[['possessions']]
 
-    pbp_data <- bind_rows(lapply(response, function(x){
-      json <- fromJSON(content(x, as = "text", encoding = 'UTF-8'))
-      pbp_data <- json[['possessions']]
+    pbp_data <- pbp_data %>%
+      unnest(., VideoUrls, keep_empty = TRUE) %>%
+      rename_all(toupper)
+  }))
 
-      pbp_data <- pbp_data %>%
-        unnest(., VideoUrls, keep_empty = TRUE) %>%
-        rename_all(toupper)
-    }))
-
-    ### Data transformation
-    pbp_data <- transform_pbp_stats(pbp_data, start_period, end_period)
-    
-    ### Merge nbastats and pbpstats data
-    nba_data_merge <- nba_data %>% select(EVENTNUM, HOMEDESCRIPTION, VISITORDESCRIPTION)
-
-    if (!full_data){
-      pbp_data <- pbp_data %>% select(STARTTIME, ENDTIME, ID_POSSESSION, DESCRIPTION,
-                                      STARTSCOREDIFFERENTIAL, STARTTYPE, URL)
-    }
-
-    nba_data_merge <- convert_descritpion(nba_data_merge, TRUE)
-    pbp_data <- convert_descritpion(pbp_data, FALSE)
-
-    nba_data_merge <- left_join(nba_data_merge, pbp_data, by = c("DESCRIPTION", "ROWS"))
-    if (!full_data){
-      nba_data_merge <- nba_data_merge %>%  select(-DESCRIPTION)
-    }
-    nba_data <- left_join(nba_data, nba_data_merge, by = 'EVENTNUM')
-  }
-  return(nba_data)
+  return(pbp_data)
 }
 
 get_nba_pbp <- function(GameID, season, player_on_floor = FALSE, ...){
@@ -78,12 +50,12 @@ get_nba_pbp <- function(GameID, season, player_on_floor = FALSE, ...){
 
   response <- requests_nba(url, count, 5, GameID = GameID, ...)
   json <- fromJSON(content(response, as = "text"))
-  nba_data <- data.frame(matrix(unlist(json$resultSets$rowSet[[1]]), ncol = length(json$resultSets$headers[[1]]), byrow = FALSE))
-  tryCatch({names(nba_data) <- json$resultSets$headers[[1]]}, error = function(e) return(nba_data))
 
-  if(sum(dim(nba_data)) == 0){
-    return(NA)
+  nba_data <- tryCatch({data.frame(matrix(unlist(json$resultSets$rowSet[[1]]), ncol = length(json$resultSets$headers[[1]]), byrow = FALSE))}, error = function(e) return(NULL))
+  if(is.null(nba_data)){
+    return(NULL)
   }
+  names(nba_data) <- json$resultSets$headers[[1]]
 
   if (player_on_floor){
     nba_data <- purrr::map_dfr(nba_data %>% group_split(), add_player_on_floor)
@@ -117,22 +89,36 @@ get_boxscore_summary <- function(GameID, season, headers = c('all', "GameSummary
 
 get_season_pbp_full <- function(season, start=1, end=1230, early_stop = 5, verbose='FALSE'){
 
-    if (!dir.exists(suppressWarnings(normalizePath(paste0('datasets/', season))))){
+  if (!dir.exists(suppressWarnings(normalizePath(paste0('datasets/', season))))){
     dir.create(suppressWarnings(normalizePath(paste0('datasets/', season))), recursive = TRUE)
   }
+
+  if (!dir.exists(suppressWarnings(normalizePath(paste0('datasets/', season, '/nbastats'))))){
+    dir.create(suppressWarnings(normalizePath(paste0('datasets/', season, '/nbastats'))), recursive = TRUE)
+  }
+
+  if (season >= 2000){
+    if (!dir.exists(suppressWarnings(normalizePath(paste0('datasets/', season, '/pbpstats'))))){
+      dir.create(suppressWarnings(normalizePath(paste0('datasets/', season, '/pbpstats'))), recursive = TRUE)
+    }
+  }
+
   early_st <- 0
   for (i in seq(start, end)){
-    
-    if (file.exists(suppressWarnings(normalizePath(paste('./datasets', season, paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))))){
-      next
+
+    if (file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/nbastats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))))){
+      if (file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/pbpstats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))))){
+        next
+      }
     }
 
     if (i %% 100 == 0){
       Sys.sleep(600)
     }
-    t <- get_pbp_stats(i, season, player_on_floor = TRUE, possesions = TRUE, full_data = TRUE)
 
-    if (is.null(dim(t))){
+    t1 <- get_nba_pbp(i, season, player_on_floor = TRUE)
+
+    if (is.null(t1)){
       early_st <- early_st + 1
       if (early_st >= early_stop){
         break
@@ -141,11 +127,18 @@ get_season_pbp_full <- function(season, start=1, end=1230, early_stop = 5, verbo
         next
       }
     }
+
     early_st <- 0
 
-    write.csv(t, file = suppressWarnings(normalizePath(paste('./datasets', season, paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))), 
-              row.names = FALSE)
-    
+    write.csv(t1, file = suppressWarnings(normalizePath(paste('./datasets',  season, '/nbastats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))), 
+      row.names = FALSE)
+
+    if (season >= 2000){
+      t2 <- get_pbp_stats(i, season)
+      write.csv(t2, file = suppressWarnings(normalizePath(paste('./datasets', season, '/pbpstats',  paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))), 
+        row.names = FALSE)
+    }
+
     if (as.logical(verbose)){
       print(paste('Файл',  paste0(paste(season, i, sep = '_'), '.csv'), 'сохранён в папке', normalizePath(paste('./datasets', season, sep = '/'))))
     }
