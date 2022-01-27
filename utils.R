@@ -22,21 +22,21 @@ requests_nba <- function(url, count, n_rep, ...){
 trycatch_nbastats <- function(url, t, nba_request_headers, param_nba, count, n_rep, ...){
 
   tryCatch({res <- GET(url = url, timeout(t), add_headers(nba_request_headers), query = param_nba)
-  if(res$status_code != 200 | res$url == 'https://www.nba.com/stats/error/') {stop()}; return(res)},
-           error = function(e){
-             if (exists('res')){
-               mes <- ' Response status is not equal to 200. Number of remaining attempts: '
-             } else {
-               mes <- ' No response was received from nbastats, a repeat request. Number of remaining attempts: '
-             }
-             if (count < n_rep){
-               message(paste0(Sys.time(), mes, n_rep - count))
-               Sys.sleep(2)
-               return(requests_nba(url, count + 1, n_rep, ...))
-             } else{
-               stop(Sys.time(), ' No response was received from nbastats for ', n_rep, ' request attempts')
-             }
-           })
+    if(res$status_code != 200 | res$url == 'https://www.nba.com/stats/error/') {stop()}; return(res)},
+      error = function(e){
+        if (exists('res')){
+          mes <- ' Response status is not equal to 200. Number of remaining attempts: '
+        } else {
+          mes <- ' No response was received from nbastats, a repeat request. Number of remaining attempts: '
+        }
+        if (count < n_rep){
+          message(paste0(Sys.time(), mes, n_rep - count))
+          Sys.sleep(2)
+          return(requests_nba(url, count + 1, n_rep, ...))
+        } else{
+          stop(Sys.time(), ' No response was received from nbastats for ', n_rep, ' request attempts')
+        }
+    })
 }
 
 ### GET function to pbpstats.com
@@ -54,6 +54,27 @@ requests_pbpstats <- function(url, season, team_id, game_date, count, n_rep=5, .
   
   res <- trycatch_pbpstats(url, season, 10, pbpstats_request_headers, param_poss, team_id, game_date, count, n_rep, ...)
   return(res)
+}
+
+### GET function to data.nba.com
+trycatch_datanba <- function(url, t, nba_request_headers, count, n_rep){
+
+  tryCatch({res <- GET(url = url, timeout(t), add_headers(nba_request_headers))
+    if(res$status_code != 200) {stop()}; return(res)},
+      error = function(e){
+        if (exists('res')){
+          mes <- ' Response status is not equal to 200. Number of remaining attempts: '
+        } else {
+          mes <- ' No response was received from data.nba.com, a repeat request. Number of remaining attempts: '
+        }
+        if (count < n_rep){
+          message(paste0(Sys.time(), mes, n_rep - count))
+          Sys.sleep(2)
+          return(trycatch_datanba(url, t, nba_request_headers, count + 1, n_rep))
+        } else{
+          stop(Sys.time(), ' No response was received from data.nba.com for ', n_rep, ' request attempts')
+        }
+  })
 }
 
 trycatch_pbpstats <- function(url, season, t, pbpstats_request_headers, param_poss, team_id, game_date, count, n_rep, ...){

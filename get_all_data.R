@@ -9,6 +9,22 @@ library(stringr, warn.conflicts = FALSE)
 source('helpers.R')
 source('utils.R')
 
+get_nba_data <- function(GameID, season){
+  GameID <- paste0(paste0('002', str_sub(season, 3, 4), '0'), str_pad(GameID, 4, side = "left", pad = 0))
+  url <- paste0("https://data.nba.com/data/v2015/json/mobile_teams/nba/", season, "/scores/pbp/", GameID, "_full_pbp.json")
+
+  count <- 1
+  response <- trycatch_datanba(url, 10, nba_request_headers, count, 5)
+  json <- fromJSON(content(response, as = "text", encoding = 'UTF-8'))
+
+  game_id <- json$g$gid
+  period <- json$g$pd$p
+
+  data <- bind_rows(lapply(period, function(period){mutate(json$g$pd$pla[[period]], PERIOD = period)}))
+  data <- mutate(data, GAME_ID = game_id)
+
+  return(data)
+}
 
 get_pbp_stats <- function(GameID, season, ...){
 
@@ -103,40 +119,61 @@ get_season_pbp_full <- function(season, start=1, end=1230, early_stop = 5, verbo
     }
   }
 
+  if (season >= 2016){
+    if (!dir.exists(suppressWarnings(normalizePath(paste0('datasets/', season, '/datanba'))))){
+      dir.create(suppressWarnings(normalizePath(paste0('datasets/', season, '/datanba'))), recursive = TRUE)
+    }
+  }
+
   early_st <- 0
+  sleep <- 1
   for (i in seq(start, end)){
 
-    if (file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/nbastats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))))){
-      if (file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/pbpstats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))))){
-        next
+    exists_nbastats <- as.integer(!file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/nbastats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/')))))
+    exists_pbpstats <- as.integer(!file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/pbpstats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/')))))
+    exists_nbadata <- as.integer(!file.exists(suppressWarnings(normalizePath(paste('./datasets', season, '/datanba', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/')))))
+
+    if(sum(c(exists_nbastats, exists_pbpstats, exists_nbadata)) == 0){
+      next
+    } else {
+      if (sleep %% 100 == 0){
+        Sys.sleep(600)
       }
-    }
 
-    if (i %% 100 == 0){
-      Sys.sleep(600)
-    }
+      sleep <- sleep + 1
+      for(n in c("get_nba_pbp"[exists_nbastats], "get_pbp_stats"[exists_pbpstats], "get_nba_data"[exists_nbadata])){
+        if(season < 2000){
+          if(n %in% c("get_pbp_stats", "get_nba_data")){
+            next
+          }
+        } else if(season < 2016){
+          if(n == "get_nba_data"){
+            next
+          }
+        }
 
-    t1 <- get_nba_pbp(i, season, player_on_floor = TRUE)
+        dt <- do.call(n, list(GameID = i, season = season))
 
-    if (is.null(t1)){
-      early_st <- early_st + 1
-      if (early_st >= early_stop){
-        break
-      } else {
-        Sys.sleep(5)
-        next
+        if(n == "get_nba_pbp"){
+          if (is.null(dt)){
+            early_st <- early_st + 1
+            if (early_st >= early_stop){
+              break
+            } else {
+              Sys.sleep(5)
+              next
+            }
+          }
+        }
+        early_st <- 0
+        folder <- switch(n,
+                         "get_nba_pbp" = "nbastats",
+                         "get_pbp_stats" = "pbpstats",
+                         "get_nba_data" = "datanba")
+
+        write.csv(dt, file = suppressWarnings(normalizePath(paste('./datasets',  season, '/', folder, paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))), 
+                  row.names = FALSE)
       }
-    }
-
-    early_st <- 0
-
-    write.csv(t1, file = suppressWarnings(normalizePath(paste('./datasets',  season, '/nbastats', paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))), 
-      row.names = FALSE)
-
-    if (season >= 2000){
-      t2 <- get_pbp_stats(i, season)
-      write.csv(t2, file = suppressWarnings(normalizePath(paste('./datasets', season, '/pbpstats',  paste0(paste(season, i, sep = '_'), '.csv'), sep = '/'))), 
-        row.names = FALSE)
     }
 
     if (as.logical(verbose)){
@@ -145,5 +182,7 @@ get_season_pbp_full <- function(season, start=1, end=1230, early_stop = 5, verbo
     Sys.sleep(5)
   }
 }
+
+get_season_pbp_full(2020, start = 1, end = 3)
 
 command_line_work(get_season_pbp_full)
